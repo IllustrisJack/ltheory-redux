@@ -1,7 +1,6 @@
 name: Build Binaries
 
 on:
-  pull_request:
   push:
     branches:
       - main
@@ -13,11 +12,47 @@ permissions:
   contents: write
 
 jobs:
+  gen-build-number:
+    name: Generate Build Number
+    runs-on: ubuntu-latest
+    outputs:
+      build_number: ${{ steps.gen-build-number.outputs.build_number }}
+    steps:
+      - name: Generate build number
+        id: gen-build-number
+        uses: onyxmueller/build-tag-number@v1
+        with:
+          token: ${{secrets.github_token}}        
+      - name: Print new build number
+        run: echo "Build number is $BUILD_NUMBER"
+ 
+  create-tag:
+    needs: gen-build-number
+    name: Create tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Print new build number
+        run: echo "Build number is ${{ needs.gen-build-number.outputs.build_number }}"
+      - name: Create tag
+        uses: rickstaa/action-create-tag@v1
+        id: "tag_create"
+        with:
+          tag: "${{ needs.gen-build-number.outputs.build_number }}"
+          tag_exists_error: false
+          message: "Build #${{ needs.gen-build-number.outputs.build_number }}"
+
   build-windows:
+    needs: gen-build-number
     name: Build Windows
     runs-on: windows-2019
     steps:
       - uses: actions/checkout@v3
+      - name: Update build number
+        run: |
+          sed -i 's/Config.gameVersion = \".*\"/Config.gameVersion = \"${{ needs.gen-build-number.outputs.build_number }}\"/' "${env:GITHUB_WORKSPACE}/script/Config/App.lua"
       - name: Build
         shell: bash
         run: ./build.sh
@@ -69,11 +104,12 @@ jobs:
         with:
           name: ltheory-bin-ubuntu2004
           path: ${{github.workspace}}/bin/*
-
+  
   release:
-    name: Update 'latest' release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: New release
     needs:
+      - gen-build-number
+      - create-tag
       - build-windows
       - build-macos
       - build-ubuntu
@@ -85,41 +121,13 @@ jobs:
         run: ls -alFR
       - name: Zip artifacts
         run: for dir in $(ls); do cd $dir && zip ../$dir.zip ./* -r && cd ..; done
-      - name: Get latest release ID
-        uses: octokit/request-action@v2.x
-        id: get_latest_release
-        with:
-          route: GET /repos/Limit-Theory-Redux/ltheory/releases/tags/latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Delete latest release
-        uses: octokit/request-action@v2.x
-        with:
-          route: DELETE /repos/Limit-Theory-Redux/ltheory/releases/{release_id}
-          release_id: ${{ fromJson(steps.get_latest_release.outputs.data).id }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Delete 'latest' tag
-        uses: octokit/request-action@v2.x
-        with:
-          route: DELETE /repos/Limit-Theory-Redux/ltheory/git/refs/tags/latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Re-create 'latest' tag with the current SHA
-        uses: octokit/request-action@v2.x
-        with:
-          route: POST /repos/Limit-Theory-Redux/ltheory/git/refs
-          ref: refs/tags/latest
-          sha: ${{ github.sha }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: "Latest build"
+          name: "Build #${{ needs.gen-build-number.outputs.build_number }}"
           body: "Build log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          tag_name: latest
-          prerelease: true
+          tag_name: "${{ needs.gen-build-number.outputs.build_number }}"
+          prerelease: false
           files: ./*.zip
